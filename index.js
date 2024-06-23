@@ -3,6 +3,7 @@ const app = express();
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config()
+const stripe = require('stripe')(process.env.STRIPE_SECRATE_KEY)
 const port = process.env.PORT || 5000;
 
 // middleware
@@ -11,7 +12,7 @@ app.use(express.json());
 
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.swu9d.mongodb.net/?retryWrites=true&w=majority`;
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.zyfftle.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
@@ -27,15 +28,16 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
-    const userCollection = client.db("bistroDb").collection("users");
-    const menuCollection = client.db("bistroDb").collection("menu");
-    const reviewCollection = client.db("bistroDb").collection("reviews");
-    const cartCollection = client.db("bistroDb").collection("carts");
+    const userCollection = client.db('bistroDB').collection('users')
+    const menuCollection = client.db('bistroDB').collection('menu')
+    const reviewsCollection = client.db('bistroDB').collection('reviews')
+    const cartCollection = client.db('bistroDB').collection('carts')
+    const paymentCollection = client.db('bistroDB').collection('payments')
 
     // jwt related api
     app.post('/jwt', async (req, res) => {
       const user = req.body;
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRETE, { expiresIn: '1d' });
       res.send({ token });
     })
 
@@ -46,7 +48,7 @@ async function run() {
         return res.status(401).send({ message: 'unauthorized access' });
       }
       const token = req.headers.authorization.split(' ')[1];
-      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+      jwt.verify(token, process.env.ACCESS_TOKEN_SECRETE, (err, decoded) => {
         if (err) {
           return res.status(401).send({ message: 'unauthorized access' })
         }
@@ -166,7 +168,7 @@ async function run() {
     })
 
     app.get('/reviews', async (req, res) => {
-      const result = await reviewCollection.find().toArray();
+      const result = await reviewsCollection.find().toArray();
       res.send(result);
     })
 
@@ -189,6 +191,44 @@ async function run() {
       const query = { _id: new ObjectId(id) }
       const result = await cartCollection.deleteOne(query);
       res.send(result);
+    })
+
+    // payment intent
+    app.post('/create-payment-intent', async(req, res) => {
+      const {price} = req.body;
+      const amount = parseInt(price * 100);
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: 'usd',
+        payment_method_types: ['card']
+      })
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    })
+
+    // payment related api
+    app.get('/payments/:email', verifyToken, async(req, res) => {
+      const query = { email: req.params.email}
+      if (req.params.email !== req.decoded.email){
+        return res.status(403).send({ message: 'forbidden access'})
+      }
+      const result = await paymentCollection.find(query).toArray()
+      res.send(result)
+    })
+
+    app.post('/payment', async(req, res) => {
+      const payment = req.body
+      const paymentResult = await paymentCollection.insertOne(payment)
+
+      // carefully delete each item from the cart
+      console.log('payment info', payment);
+      const query = {_id: {
+        $in: payment.cartIds.map(id => new ObjectId(id))
+      }}
+      const deleteResult = await cartCollection.deleteMany(query)
+
+      res.send({paymentResult, deleteResult})
     })
 
     // Send a ping to confirm a successful connection
